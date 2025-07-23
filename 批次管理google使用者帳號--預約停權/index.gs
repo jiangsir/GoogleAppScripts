@@ -11,10 +11,10 @@ const MailStatusColumnIndex = 8; // 假設郵件狀態在第 9 欄（I 欄）
 function onOpen() {
   const ui = SpreadsheetApp.getUi();
   ui.createMenu('使用者管理工具')
-    .addItem('寄發連續通知信', 'scheduleNotificationEmails')
-    .addItem('建立/更新停權觸發器', 'scheduleSuspendUsersByTime')
-    .addItem('立即停權所有使用者', 'SuspendAllUser')
-    .addItem('清理所有觸發器', 'cleanAllTriggers')
+    .addItem('寄發本工作表內的連續通知信', 'scheduleNotificationEmails')
+    .addItem('建立/更新本工作表內的停權觸發器', 'scheduleSuspendUsersByTime')
+    .addItem('立即停權本工作表所有使用者', 'SuspendAllUser')
+    .addItem('清理本工作表所有觸發器', 'cleanAllTriggers')
     .addToUi();
 }
 
@@ -640,24 +640,106 @@ function SuspendAllUser() {
 }
 
 /**
- * 清理所有觸發器（手動執行用）
+ * 清理目前分頁的所有觸發器（手動執行用）
  */
 function cleanAllTriggers() {
+  const sheet = SpreadsheetApp.getActiveSpreadsheet().getActiveSheet();
+  const sheetName = sheet.getName();
   const allTriggers = ScriptApp.getProjectTriggers();
-  for (let trig of allTriggers) {
-    ScriptApp.deleteTrigger(trig);
-    console.log(`刪除觸發器：${trig.getHandlerFunction()}`);
-  }
   
-  // 清理所有相關的 Properties
-  const props = PropertiesService.getScriptProperties();
-  const allProps = props.getProperties();
-  for (let key in allProps) {
-    if (key.startsWith('trigger_') || key.startsWith('notification_trigger_')) {
-      props.deleteProperty(key);
+  let deletedSuspendTriggers = 0;
+  let deletedNotificationTriggers = 0;
+  
+  // 清理停權觸發器
+  for (let trig of allTriggers) {
+    if (trig.getHandlerFunction() === 'suspendUsersAtTime') {
+      const propKey = `trigger_${trig.getUniqueId()}`;
+      const storedData = PropertiesService.getScriptProperties().getProperty(propKey);
+      if (storedData) {
+        try {
+          const triggerData = JSON.parse(storedData);
+          if (triggerData.sheetName === sheetName) {
+            ScriptApp.deleteTrigger(trig);
+            PropertiesService.getScriptProperties().deleteProperty(propKey);
+            console.log(`刪除工作表 ${sheetName} 的停權觸發器（UID=${trig.getUniqueId()}）`);
+            deletedSuspendTriggers++;
+          }
+        } catch (e) {
+          // JSON 解析失敗但仍屬於該工作表的觸發器，也刪除
+          ScriptApp.deleteTrigger(trig);
+          PropertiesService.getScriptProperties().deleteProperty(propKey);
+          console.log(`刪除工作表 ${sheetName} 的損壞停權觸發器（UID=${trig.getUniqueId()}）`);
+          deletedSuspendTriggers++;
+        }
+      }
     }
   }
   
-  console.log('所有觸發器已清理完成');
-  SpreadsheetApp.getUi().alert('所有觸發器已清理完成');
+  // 清理通知觸發器
+  for (let trig of allTriggers) {
+    if (trig.getHandlerFunction() === 'sendNotificationEmails') {
+      const propKey = `notification_trigger_${trig.getUniqueId()}`;
+      const storedData = PropertiesService.getScriptProperties().getProperty(propKey);
+      if (storedData) {
+        try {
+          const triggerData = JSON.parse(storedData);
+          if (triggerData.sheetName === sheetName) {
+            ScriptApp.deleteTrigger(trig);
+            PropertiesService.getScriptProperties().deleteProperty(propKey);
+            console.log(`刪除工作表 ${sheetName} 的通知觸發器（UID=${trig.getUniqueId()}）`);
+            deletedNotificationTriggers++;
+          }
+        } catch (e) {
+          // JSON 解析失敗但仍屬於該工作表的觸發器，也刪除
+          ScriptApp.deleteTrigger(trig);
+          PropertiesService.getScriptProperties().deleteProperty(propKey);
+          console.log(`刪除工作表 ${sheetName} 的損壞通知觸發器（UID=${trig.getUniqueId()}）`);
+          deletedNotificationTriggers++;
+        }
+      }
+    }
+  }
+  
+  // 🆕 清空 G 欄（狀態）和 I 欄（郵件狀態）- 只清理觸發器相關的狀態
+  const data = sheet.getDataRange().getValues();
+  let clearedCells = 0;
+  
+  for (let row = 1; row < data.length; row++) {
+    const email = data[row][emailColumnIndex]; // 假設 email 在第 3 欄（C 欄）
+    if (!email) continue; // 跳過沒有 email 的列
+    
+    // 清空 G 欄（狀態欄）- 只清理觸發器設定的狀態
+    const statusCell = sheet.getRange(row + 1, statusColumnIndex + 1);
+    const currentStatus = statusCell.getValue();
+    if (currentStatus === '已預約') {
+      statusCell.setValue('');
+      clearedCells++;
+    }
+    
+    // 清空 I 欄（郵件狀態欄）- 只清理觸發器設定的狀態
+    const mailStatusCell = sheet.getRange(row + 1, MailStatusColumnIndex + 1);
+    const currentMailStatus = mailStatusCell.getValue();
+    if (currentMailStatus && (
+        currentMailStatus.includes('已預約連續通知信') || 
+        currentMailStatus.includes('已發送') || 
+        currentMailStatus.includes('前通知')
+      )) {
+      mailStatusCell.setValue('');
+      clearedCells++;
+    }
+  }
+  
+  const totalDeleted = deletedSuspendTriggers + deletedNotificationTriggers;
+  
+  if (totalDeleted > 0 || clearedCells > 0) {
+    console.log(`工作表「${sheetName}」清理完成：`);
+    console.log(`- 停權觸發器：${deletedSuspendTriggers} 個`);
+    console.log(`- 通知觸發器：${deletedNotificationTriggers} 個`);
+    console.log(`- 清空相關狀態：${clearedCells} 個儲存格`);
+    
+    SpreadsheetApp.getUi().alert(`工作表「${sheetName}」清理完成：\n\n• 停權觸發器：${deletedSuspendTriggers} 個\n• 通知觸發器：${deletedNotificationTriggers} 個\n• 清空相關狀態：${clearedCells} 個儲存格`);
+  } else {
+    console.log(`工作表「${sheetName}」目前沒有任何觸發器或相關狀態需要清理`);
+    SpreadsheetApp.getUi().alert(`工作表「${sheetName}」目前沒有任何觸發器或相關狀態需要清理。`);
+  }
 }
