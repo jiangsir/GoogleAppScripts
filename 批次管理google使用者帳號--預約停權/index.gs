@@ -292,8 +292,14 @@ function scheduleNotificationEmails() {
     for (let weeks = 4; weeks >= 1; weeks--) {
       const notificationDate = new Date(suspendDate.getTime() - (weeks * 7 * 24 * 60 * 60 * 1000));
       if (notificationDate > now) {
-        notificationTimes.add(`${notificationDate.toISOString()}_${weeks}`);
+        notificationTimes.add(`${notificationDate.toISOString()}_${weeks}week`);
       }
+    }
+    
+    // 🆕 新增：停權前 6 小時的通知
+    const sixHoursBeforeDate = new Date(suspendDate.getTime() - (6 * 60 * 60 * 1000));
+    if (sixHoursBeforeDate > now) {
+      notificationTimes.add(`${sixHoursBeforeDate.toISOString()}_6hour`);
     }
   }
 
@@ -334,10 +340,20 @@ function scheduleNotificationEmails() {
     let createdCount = 0;
     const triggerInfos = [];
 
-    for (const timeWeekStr of notificationTimes) {
-      const [timeStr, weeksStr] = timeWeekStr.split('_');
+    for (const timeTypeStr of notificationTimes) {
+      const [timeStr, typeStr] = timeTypeStr.split('_');
       const triggerTime = new Date(timeStr);
-      const weeksBeforeSuspend = parseInt(weeksStr);
+      
+      let weeksBeforeSuspend = null;
+      let hoursBeforeSuspend = null;
+      let isHourNotification = false;
+      
+      if (typeStr.endsWith('week')) {
+        weeksBeforeSuspend = parseInt(typeStr);
+      } else if (typeStr.endsWith('hour')) {
+        hoursBeforeSuspend = parseInt(typeStr);
+        isHourNotification = true;
+      }
       
       // 統計這個時間點需要通知的帳號數量
       let accountCount = 0;
@@ -349,7 +365,13 @@ function scheduleNotificationEmails() {
         const suspendDate = new Date(rowTimeStr);
         if (isNaN(suspendDate.getTime())) continue;
         
-        const expectedNotificationDate = new Date(suspendDate.getTime() - (weeksBeforeSuspend * 7 * 24 * 60 * 60 * 1000));
+        let expectedNotificationDate;
+        if (isHourNotification) {
+          expectedNotificationDate = new Date(suspendDate.getTime() - (hoursBeforeSuspend * 60 * 60 * 1000));
+        } else {
+          expectedNotificationDate = new Date(suspendDate.getTime() - (weeksBeforeSuspend * 7 * 24 * 60 * 60 * 1000));
+        }
+        
         if (Math.abs(expectedNotificationDate.getTime() - triggerTime.getTime()) < 60 * 1000) {
           accountCount++;
         }
@@ -365,6 +387,8 @@ function scheduleNotificationEmails() {
       const triggerData = {
         notificationTime: timeStr,
         weeksBeforeSuspend: weeksBeforeSuspend,
+        hoursBeforeSuspend: hoursBeforeSuspend,
+        isHourNotification: isHourNotification,
         sheetName: sheetName,
         accountCount: accountCount
       };
@@ -374,11 +398,15 @@ function scheduleNotificationEmails() {
         JSON.stringify(triggerData)
       );
 
-      console.log(`✅ 為工作表 ${sheetName} 建立通知觸發器：停權前 ${weeksBeforeSuspend} 週 (${triggerTime.toLocaleString('zh-TW')}) - ${accountCount} 個帳號`);
+      const displayText = isHourNotification ? 
+        `停權前 ${hoursBeforeSuspend} 小時` : 
+        `停權前 ${weeksBeforeSuspend} 週`;
+      
+      console.log(`✅ 為工作表 ${sheetName} 建立通知觸發器：${displayText} (${triggerTime.toLocaleString('zh-TW')}) - ${accountCount} 個帳號`);
       
       triggerInfos.push({
         time: triggerTime.toLocaleString('zh-TW'),
-        weeks: weeksBeforeSuspend,
+        type: displayText,
         count: accountCount
       });
       
@@ -396,13 +424,26 @@ function scheduleNotificationEmails() {
 
       // 檢查這個帳號是否有任何通知時間點
       let hasNotifications = false;
+      
+      // 檢查週通知
       for (let weeks = 4; weeks >= 1; weeks--) {
         const notificationDate = new Date(suspendDate.getTime() - (weeks * 7 * 24 * 60 * 60 * 1000));
         if (notificationDate > now) {
-          const key = `${notificationDate.toISOString()}_${weeks}`;
+          const key = `${notificationDate.toISOString()}_${weeks}week`;
           if (notificationTimes.has(key)) {
             hasNotifications = true;
             break;
+          }
+        }
+      }
+      
+      // 檢查小時通知
+      if (!hasNotifications) {
+        const sixHoursBeforeDate = new Date(suspendDate.getTime() - (6 * 60 * 60 * 1000));
+        if (sixHoursBeforeDate > now) {
+          const key = `${sixHoursBeforeDate.toISOString()}_6hour`;
+          if (notificationTimes.has(key)) {
+            hasNotifications = true;
           }
         }
       }
@@ -415,7 +456,7 @@ function scheduleNotificationEmails() {
     // 5️⃣ 顯示建立結果
     let message = `已為工作表「${sheetName}」建立 ${createdCount} 個通知觸發器：\n\n`;
     for (const info of triggerInfos) {
-      message += `• 停權前 ${info.weeks} 週 (${info.time}) - ${info.count} 個帳號\n`;
+      message += `• ${info.type} (${info.time}) - ${info.count} 個帳號\n`;
     }
     SpreadsheetApp.getUi().alert(message);
     
@@ -436,6 +477,8 @@ function sendNotificationEmails(e) {
     
     let notificationTime = null;
     let weeksBeforeSuspend = null;
+    let hoursBeforeSuspend = null;
+    let isHourNotification = false;
     let sheetName = null;
     
     if (thisTriggerId) {
@@ -444,9 +487,13 @@ function sendNotificationEmails(e) {
         const triggerData = JSON.parse(storedData);
         notificationTime = triggerData.notificationTime;
         weeksBeforeSuspend = triggerData.weeksBeforeSuspend;
+        hoursBeforeSuspend = triggerData.hoursBeforeSuspend;
+        isHourNotification = triggerData.isHourNotification;
         sheetName = triggerData.sheetName;
         console.log('通知時間:', notificationTime);
         console.log('停權前週數:', weeksBeforeSuspend);
+        console.log('停權前小時數:', hoursBeforeSuspend);
+        console.log('是否為小時通知:', isHourNotification);
         console.log('工作表名稱:', sheetName);
       }
     }
@@ -480,7 +527,13 @@ function sendNotificationEmails(e) {
       if (isNaN(suspendDate.getTime())) continue;
 
       // 計算預期的通知時間
-      const expectedNotificationTime = new Date(suspendDate.getTime() - (weeksBeforeSuspend * 7 * 24 * 60 * 60 * 1000));
+      let expectedNotificationTime;
+      if (isHourNotification) {
+        expectedNotificationTime = new Date(suspendDate.getTime() - (hoursBeforeSuspend * 60 * 60 * 1000));
+      } else {
+        expectedNotificationTime = new Date(suspendDate.getTime() - (weeksBeforeSuspend * 7 * 24 * 60 * 60 * 1000));
+      }
+      
       const timeDiff = Math.abs(expectedNotificationTime.getTime() - now.getTime());
       
       console.log(`檢查第 ${row + 1} 列 - 帳號: ${email}, 停權時間: ${timeStr}`);
@@ -492,9 +545,25 @@ function sendNotificationEmails(e) {
         console.log(`準備發送通知信給: ${email}`);
         try {
           // 發送通知信
-          // [信箱停用通知] 致使用本信箱的校友們，本信箱預計將於 2025/6/30 停用
-          const subject = `[信箱停用通知] 因應國教署資安政策，離職/畢業帳號停權通知 - 本帳號預計將於 ${suspendDate.toLocaleString('zh-TW')} 實施停權`;
-          const body = `
+          let subject, body;
+          const timeInfo = isHourNotification ? 
+            `${hoursBeforeSuspend} 小時` : 
+            `${weeksBeforeSuspend} 週`;
+          
+          subject = `[信箱停用通知] 因應國教署資安政策，離職/畢業帳號停權通知 - 本帳號預計將於 ${suspendDate.toLocaleString('zh-TW')} 實施停權`;
+          
+          if (isHourNotification) {
+            body = `
+親愛的使用者，
+
+為因應國教署資安政策，本[離職/畢業]帳號 ${email} 將於 ${suspendDate.toLocaleString('zh-TW')} 停權。
+
+⚠️ 這是停權前 ${hoursBeforeSuspend} 小時的最後提醒通知，請立即處理資料轉移事宜！
+
+此信件為系統自動發送，請勿直接回覆。
+            `;
+          } else {
+            body = `
 親愛的使用者，
 
 為因應國教署資安政策，本[離職/畢業]帳號 ${email} 將於 ${suspendDate.toLocaleString('zh-TW')} 停權。
@@ -502,15 +571,18 @@ function sendNotificationEmails(e) {
 這是停權前 ${weeksBeforeSuspend} 週的提醒通知，請儘速處理資料轉移事宜。
 
 此信件為系統自動發送，請勿直接回覆。
-          `;
+            `;
+          }
           
           GmailApp.sendEmail(email, subject, body);
-          console.log(`✅ 通知信發送成功：${email} (停權前 ${weeksBeforeSuspend} 週)`);
+          console.log(`✅ 通知信發送成功：${email} (停權前 ${timeInfo})`);
           sentCount++;
           
-          // 在工作表中記錄發送狀態（可選）
-          const currentStatus = sheet.getRange(row + 1, statusColumnIndex + 1).getValue() || '';
-          const newStatus = currentStatus ? `${currentStatus}; 已發送${weeksBeforeSuspend}週前通知` : `已發送${weeksBeforeSuspend}週前通知`;
+          // 在工作表中記錄發送狀態
+          const currentStatus = sheet.getRange(row + 1, MailStatusColumnIndex + 1).getValue() || '';
+          const newStatus = currentStatus ? 
+            `${currentStatus}; 已發送${timeInfo}前通知` : 
+            `已發送${timeInfo}前通知`;
           sheet.getRange(row + 1, MailStatusColumnIndex + 1).setValue(newStatus);
         } catch (err) {
           sheet.getRange(row + 1, errorColumnIndex + 1).setValue(err.message);
